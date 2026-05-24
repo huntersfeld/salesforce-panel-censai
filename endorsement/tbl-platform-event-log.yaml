@@ -1,0 +1,64 @@
+table: "TBL_PLATFORM_EVENT_LOG"
+full_path: "SFDC_CONSUMPTION.CORE.TBL_PLATFORM_EVENT_LOG"
+type: "table"
+endorsed_by: "Central Strategy & Consumption"
+
+description: >
+  Record of platform events — outages, degradations, and maintenance windows —
+  that may affect consumption metrics. Used by triage workflows to distinguish
+  genuine adoption issues from transient platform-caused metric drops. One row
+  per event; global events (affected_scope = 'GLOBAL') affect all tenants and
+  carry a NULL account_id.
+
+grain: "one row per platform event"
+
+primary_key:
+  - "event_id"
+
+columns:
+  event_id:
+    type: "VARCHAR"
+    description: "Unique identifier for the platform event"
+  event_name:
+    type: "VARCHAR"
+    description: "Human-readable name describing the event"
+  event_type:
+    type: "VARCHAR"
+    description: "Category of event: OUTAGE (service down), DEGRADED (reduced performance), MAINTENANCE (planned window)"
+  severity:
+    type: "VARCHAR"
+    description: "Severity tier: SEV1 (critical), SEV2 (major), SEV3 (minor/planned)"
+  affected_scope:
+    type: "VARCHAR"
+    description: "GLOBAL if all tenants are affected; ACCOUNT if scoped to a single account_id"
+  account_id:
+    type: "VARCHAR"
+    description: "Account affected by this event — NULL for GLOBAL events; joins to VW_ACCOUNT_DETAILS for ACCOUNT-scoped events"
+  event_start:
+    type: "TIMESTAMP_NTZ"
+    description: "UTC timestamp when the event began"
+  event_end:
+    type: "TIMESTAMP_NTZ"
+    description: "UTC timestamp when the event was resolved or the maintenance window closed"
+  is_resolved:
+    type: "BOOLEAN"
+    description: "TRUE once the event is closed; FALSE for open or ongoing incidents"
+  resolution_notes:
+    type: "VARCHAR"
+    description: "Free-text summary of the resolution or root cause"
+
+join_keys:
+  - with: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+    on: "TBL_PLATFORM_EVENT_LOG.account_id = VW_ACCOUNT_DETAILS.account_id (nullable — GLOBAL events do not join; filter affected_scope = 'ACCOUNT' before joining)"
+
+required_filters:
+  - "is_resolved = TRUE unless specifically querying open or ongoing incidents"
+
+caveats:
+  - "GLOBAL events affect all accounts — triage logic must check both GLOBAL events and ACCOUNT-scoped events for the specific account before concluding no platform event exists"
+  - "account_id is NULL for GLOBAL events; joining without a NULL guard will drop those rows silently"
+  - "event_start and event_end are UTC — convert to account region timezone when correlating against event_date in TBL_CONSUMPTION_EVENTS"
+  - "A platform event during a week partially explains a CCR drop but does not rule out structural issues; check whether CCR recovered the following week before closing the triage"
+
+related_metrics:
+  - "ccr"

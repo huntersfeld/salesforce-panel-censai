@@ -1,0 +1,76 @@
+table: "VW_ACCOUNT_DETAILS"
+full_path: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+type: "view"
+endorsed_by: "Central Strategy & Consumption"
+
+description: >
+  Dimensional view of account metadata sourced from Salesforce CRM. Primary
+  lookup for account name, segment, assigned AE/CSM, tier, and renewal date.
+  Join this view to any consumption fact table to enrich output with
+  account context.
+
+grain: "one row per account"
+
+primary_key:
+  - "account_id"
+
+columns:
+  account_id:
+    type: "VARCHAR"
+    description: "Unique account identifier — primary join key across all consumption tables"
+  account_name:
+    type: "VARCHAR"
+    description: "Account display name"
+  segment:
+    type: "VARCHAR"
+    description: "Commercial segment (e.g., ENTERPRISE, COMMERCIAL, SMB) — joins to benchmark tables"
+  contract_tier:
+    type: "VARCHAR"
+    description: "Current contract tier (e.g., STARTER, GROWTH, ENTERPRISE) — joins to benchmark tables"
+  ae_name:
+    type: "VARCHAR"
+    description: "Assigned Account Executive name"
+  ae_id:
+    type: "VARCHAR"
+    description: "Assigned Account Executive Salesforce user ID"
+  csm_name:
+    type: "VARCHAR"
+    description: "Assigned Customer Success Manager name"
+  csm_id:
+    type: "VARCHAR"
+    description: "Assigned Customer Success Manager Salesforce user ID"
+  renewal_date:
+    type: "DATE"
+    description: "Contract renewal date — use for renewal risk prioritization"
+  region:
+    type: "VARCHAR"
+    description: "Geographic region (e.g., AMER, EMEA, APAC)"
+  is_test_account:
+    type: "BOOLEAN"
+    description: "TRUE for internal test or sandbox accounts — always filter FALSE in production queries"
+
+join_keys:
+  - with: "SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS"
+    on: "VW_ACCOUNT_DETAILS.account_id = TBL_CONSUMPTION_EVENTS.account_id"
+  - with: "SFDC_CONSUMPTION.CORE.TBL_ACCOUNT_ENTITLEMENTS"
+    on: "VW_ACCOUNT_DETAILS.account_id = TBL_ACCOUNT_ENTITLEMENTS.account_id"
+  - with: "SFDC_CONSUMPTION.CORE.TBL_USER_ACTIVATION"
+    on: "VW_ACCOUNT_DETAILS.account_id = TBL_USER_ACTIVATION.account_id"
+  - with: "SFDC_CONSUMPTION.PLANNING.TBL_CCR_BENCHMARKS"
+    on: "VW_ACCOUNT_DETAILS.segment = TBL_CCR_BENCHMARKS.segment AND VW_ACCOUNT_DETAILS.contract_tier = TBL_CCR_BENCHMARKS.contract_tier"
+  - with: "SFDC_CONSUMPTION.PLANNING.TBL_ACTIVATION_BENCHMARKS"
+    on: "VW_ACCOUNT_DETAILS.segment = TBL_ACTIVATION_BENCHMARKS.segment"
+
+required_filters:
+  - "is_test_account = FALSE in all production queries"
+
+caveats:
+  - "AE and CSM assignments reflect current ownership — historical owner changes are not captured in this view"
+  - "segment and contract_tier values must match exactly the values in benchmark tables — check for casing differences"
+  - "View refreshes nightly from CRM — same-day AE/CSM reassignments may not appear until the following day"
+
+related_metrics:
+  - "ccr"
+  - "uts"
+  - "abr"
+  - "ers"

@@ -1,0 +1,144 @@
+metric: "Projected CCR in 2 Weeks"
+
+description: >
+  Projects CCR 14 calendar days from the current date at the current daily run
+  rate, evaluated against the pace-adjusted contracted target at that future point.
+  Narrower horizon than projected_month_end_ccr — used by the forward-looking triage
+  to identify accounts approaching overage before it occurs, giving AEs a proactive
+  outreach window before overage charges appear on the invoice.
+
+grain: "account-day"
+
+related_metrics:
+  - "ccr"
+  - "projected_month_end_ccr"
+  - "uts"
+
+actual:
+  description: >
+    Same daily run rate as projected_month_end_ccr. Projects units consumed at
+    days_elapsed + 14 and evaluates them against the pace-adjusted target at that
+    same horizon. If days_elapsed + 14 exceeds days_in_month, the projection caps
+    at days_in_month — in that case the metric is equivalent to projected_month_end_ccr
+    and is flagged as such in output.
+
+  calculation: >
+    daily_run_rate           = SUM(actual_units) / NULLIF(days_elapsed, 0)
+    horizon_days             = LEAST(days_elapsed + 14, days_in_month)
+    projected_units_at_t14   = daily_run_rate * horizon_days
+    pace_target_at_t14       = monthly_contracted_units * horizon_days / days_in_month
+    projected_ccr_in_2_weeks = projected_units_at_t14 / NULLIF(pace_target_at_t14, 0) * 100
+
+  primary_table: "SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS"
+
+  primary_join_keys:
+    - "TBL_ACCOUNT_ENTITLEMENTS: ce.account_id = ent.account_id AND ent.is_active = TRUE"
+    - "VW_BILLING_CALENDAR: ce.account_id = bc.account_id AND bc.billing_month = DATE_TRUNC('month', CURRENT_DATE)"
+    - "VW_ACCOUNT_DETAILS: ce.account_id = ad.account_id"
+
+  primary_filters:
+    - "WHERE ce.event_date BETWEEN bc.billing_cycle_start AND CURRENT_DATE"
+    - "ad.is_test_account = FALSE"
+    - "bc.days_elapsed > 0 (exclude day-1 accounts — run rate undefined)"
+
+  supporting_tables:
+    - "SFDC_CONSUMPTION.CORE.TBL_ACCOUNT_ENTITLEMENTS"
+    - "SFDC_CONSUMPTION.CORE.VW_BILLING_CALENDAR"
+    - "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+
+  supporting_join_keys: []
+
+  supporting_filters:
+    - "ent.is_active = TRUE (current active contract only)"
+
+  example: |
+    -- Projected CCR at 14-day horizon for all accounts
+    WITH billing_context AS (
+      SELECT
+        bc.account_id,
+        bc.billing_cycle_start,
+        bc.days_in_month,
+        DATEDIFF('day', bc.billing_cycle_start, CURRENT_DATE) + 1 AS days_elapsed,
+        ent.monthly_contracted_units
+      FROM SFDC_CONSUMPTION.CORE.VW_BILLING_CALENDAR bc
+      JOIN SFDC_CONSUMPTION.CORE.TBL_ACCOUNT_ENTITLEMENTS ent
+        ON bc.account_id = ent.account_id
+        AND ent.is_active = TRUE
+      WHERE bc.billing_month = DATE_TRUNC('month', CURRENT_DATE)
+    ),
+    mtd_consumption AS (
+      SELECT
+        ce.account_id,
+        SUM(ce.consumption_units) AS actual_units
+      FROM SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS ce
+      WHERE ce.event_date >= DATE_TRUNC('month', CURRENT_DATE)
+        AND ce.event_date <= CURRENT_DATE
+      GROUP BY ce.account_id
+    )
+    SELECT
+      ad.account_name,
+      ad.segment,
+      ad.ae_name,
+      ad.csm_name,
+      bc.days_elapsed,
+      LEAST(bc.days_elapsed + 14, bc.days_in_month)                       AS horizon_days,
+      CASE WHEN bc.days_elapsed + 14 >= bc.days_in_month THEN TRUE
+           ELSE FALSE END                                                   AS collapses_to_month_end,
+      ROUND(
+        (mc.actual_units / NULLIF(bc.days_elapsed, 0))
+          * LEAST(bc.days_elapsed + 14, bc.days_in_month)
+        / NULLIF(
+            bc.monthly_contracted_units
+              * LEAST(bc.days_elapsed + 14, bc.days_in_month)
+              / bc.days_in_month,
+            0
+          ) * 100,
+        1
+      ) AS projected_ccr_in_2_weeks
+    FROM billing_context bc
+    JOIN mtd_consumption mc ON bc.account_id = mc.account_id
+    JOIN SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS ad ON bc.account_id = ad.account_id
+    WHERE ad.is_test_account = FALSE
+      AND bc.days_elapsed > 0
+    ORDER BY projected_ccr_in_2_weeks DESC;
+
+  validation:
+    - "Exclude accounts where days_elapsed = 0 — run rate undefined on day 1 of billing cycle"
+    - "Flag accounts where collapses_to_month_end = TRUE — treat identically to projected_month_end_ccr in that case"
+    - "projected_ccr_in_2_weeks > 110 warrants data quality check; values above 100% are legitimate and require commercial action"
+    - "Verify consistency: projected_ccr_in_2_weeks should be >= projected_month_end_ccr for accounts with days_elapsed < days_in_month - 14"
+
+  key_context:
+    - "pace_target_at_t14 normalizes the projection against what should have been consumed by that future date — a value of 100% means the account is on pace, not over contract"
+    - "Values above 100% mean the account will be in overage in 2 weeks at current trajectory — the commercial framing is proactive customer protection, not an upsell"
+    - "When horizon_days = days_in_month, the pace_target denominator equals monthly_contracted_units — projection is equivalent to projected_month_end_ccr"
+    - "Late-month accounts (days_elapsed > 16) will always collapse to month-end; use projected_month_end_ccr for them instead"
+
+target:
+  type: "threshold"
+
+  description: >
+    Accounts projecting at or above 100% CCR within 2 weeks are the primary
+    signal for proactive AE outreach. The intervention window at this point is
+    optimal — the commercial ask has a natural customer-benefit framing before
+    overage charges appear.
+
+  calculation: "N/A — threshold-based, no table query"
+
+  primary_table: null
+  primary_join_keys: []
+  primary_filters: []
+  supporting_tables: []
+  supporting_join_keys: []
+  supporting_filters: []
+  example: null
+  validation: []
+
+  key_context:
+    - "100% threshold here means pace-adjusted overage — not full contract overage (that is the CCR > 100% condition)"
+    - "AE should initiate outreach this week when this flag triggers — a week's delay moves the account into active overage"
+
+thresholds:
+  approaching_overage: ">= 100% at 14-day horizon (forward-looking triage entry condition)"
+  on_pace:             "85% – 99%"
+  watch:               "< 85%"

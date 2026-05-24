@@ -1,0 +1,121 @@
+metric: "Active Expansion Flag"
+
+description: >
+  Boolean per account indicating whether an active expansion opportunity exists
+  in the CRM this quarter. Returns TRUE if the account has at least one open
+  expansion opportunity created within the current Salesforce fiscal quarter.
+  Used by the expansion-qualification triage to distinguish accounts where an
+  expansion conversation is already in motion from unworked opportunities
+  requiring AE escalation.
+
+grain: "account-quarter"
+
+related_metrics:
+  - "ers"
+  - "ccr"
+
+actual:
+  description: >
+    Returns TRUE if the account has at least one row in TBL_OPPORTUNITIES where
+    is_active_expansion = TRUE and created_date falls within the current
+    Salesforce fiscal quarter, as defined by DIM_DATE.fiscal_year and
+    DIM_DATE.fiscal_quarter. Returns FALSE if no such row exists. Fiscal quarter
+    boundaries are resolved dynamically from DIM_DATE — do not hardcode dates.
+
+  calculation: >
+    EXISTS (
+      SELECT 1
+      FROM SALESFORCE_CRM.PUBLIC.TBL_OPPORTUNITIES opp
+      JOIN SHARED.DW.DIM_DATE dd_created ON opp.created_date = dd_created.date
+      JOIN SHARED.DW.DIM_DATE dd_current ON dd_current.date = CURRENT_DATE
+      WHERE opp.account_id = :account_id
+        AND opp.is_active_expansion = TRUE
+        AND dd_created.fiscal_year    = dd_current.fiscal_year
+        AND dd_created.fiscal_quarter = dd_current.fiscal_quarter
+    )
+
+  primary_table: "SALESFORCE_CRM.PUBLIC.TBL_OPPORTUNITIES"
+
+  primary_join_keys:
+    - "DIM_DATE: dd_created.date = opp.created_date (fiscal quarter lookup for opportunity)"
+    - "DIM_DATE: dd_current.date = CURRENT_DATE (current fiscal quarter reference)"
+    - "VW_ACCOUNT_DETAILS: opp.account_id = ad.account_id"
+
+  primary_filters:
+    - "opp.is_active_expansion = TRUE"
+    - "dd_created.fiscal_year = dd_current.fiscal_year AND dd_created.fiscal_quarter = dd_current.fiscal_quarter"
+    - "ad.is_test_account = FALSE"
+
+  supporting_tables:
+    - "SHARED.DW.DIM_DATE"
+    - "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+
+  supporting_join_keys: []
+
+  supporting_filters: []
+
+  example: |
+    -- Active expansion flag for all accounts, current Salesforce fiscal quarter
+    WITH current_fiscal AS (
+      SELECT fiscal_year, fiscal_quarter
+      FROM SHARED.DW.DIM_DATE
+      WHERE date = CURRENT_DATE
+    ),
+    expansion_this_quarter AS (
+      SELECT DISTINCT opp.account_id
+      FROM SALESFORCE_CRM.PUBLIC.TBL_OPPORTUNITIES opp
+      JOIN SHARED.DW.DIM_DATE dd ON opp.created_date = dd.date
+      JOIN current_fiscal cf
+        ON dd.fiscal_year    = cf.fiscal_year
+        AND dd.fiscal_quarter = cf.fiscal_quarter
+      WHERE opp.is_active_expansion = TRUE
+    )
+    SELECT
+      ad.account_name,
+      ad.segment,
+      ad.ae_name,
+      ad.csm_name,
+      CASE WHEN eq.account_id IS NOT NULL THEN TRUE ELSE FALSE END AS active_expansion_flag
+    FROM SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS ad
+    LEFT JOIN expansion_this_quarter eq ON ad.account_id = eq.account_id
+    WHERE ad.is_test_account = FALSE
+    ORDER BY ad.account_name;
+
+  validation:
+    - "Verify DIM_DATE contains a row for CURRENT_DATE — a missing row causes the fiscal quarter join to return NULL and misclassifies all accounts as FALSE"
+    - "An account with active renewals but no expansion should return FALSE — is_active_expansion on TBL_OPPORTUNITIES prevents renewal/expansion conflation"
+    - "An account returning TRUE but with no AE-visible CRM activity warrants data quality review — confirm the opportunity record is not a data entry artifact"
+    - "Salesforce fiscal year runs February–January — verify fiscal_quarter boundaries in DIM_DATE before Q1/Q4 boundary checks"
+
+  key_context:
+    - "Uses is_active_expansion from TBL_OPPORTUNITIES, which is a derived boolean (TRUE when opportunity_type = EXPANSION and stage not in CLOSED_WON / CLOSED_LOST) — do not reconstruct this logic manually"
+    - "TRUE means an expansion conversation is already being worked this quarter — CenSai does not escalate; AE reports status at next pipeline review"
+    - "FALSE means no active expansion conversation exists — if ERS and CCR qualify the account, expansion-qualification triage flags for AE escalation"
+    - "Quarter scope uses created_date, not expected_close_date — an opportunity opened last quarter and still active will return FALSE under the current-quarter filter"
+
+target:
+  type: "threshold"
+
+  description: >
+    Active expansion flag is a binary classification, not a continuous metric.
+    There is no target table or benchmark value. The flag is interpreted
+    directionally within the expansion-qualification triage: TRUE suppresses
+    further escalation; FALSE triggers it if ERS and CCR thresholds are met.
+
+  calculation: "N/A — boolean flag, no table query"
+
+  primary_table: null
+  primary_join_keys: []
+  primary_filters: []
+  supporting_tables: []
+  supporting_join_keys: []
+  supporting_filters: []
+  example: null
+  validation: []
+
+  key_context:
+    - "Flag interpretation is context-dependent — TRUE is only meaningful after the account has passed ERS and CCR qualification in the expansion triage"
+
+thresholds:
+  true:  "Active expansion conversation exists this quarter — AE to report pipeline status, no new escalation"
+  false: "No active expansion conversation this quarter — AE escalation required if ERS >= 8.0 for 2+ consecutive weeks"

@@ -1,0 +1,159 @@
+id: "weekly_digest"
+name: "Weekly CenSai Digest"
+description: >
+  Output schema for the automated weekly email to sales leaders. CenSai
+  populates this template dynamically from the outputs of all three triage
+  workflows. This file defines field names, inclusion rules, sort order, and
+  formatting behavior — not prose content. CenSai resolves all values from
+  triage terminal definitions and VW_ACCOUNT_DETAILS at send time.
+
+trigger:
+  schedule: "Monday morning, before first AE/CSM standup of the week"
+  population: >
+    All accounts in TBL_ACCOUNT_ENTITLEMENTS where is_active = TRUE
+    and VW_ACCOUNT_DETAILS.is_test_account = FALSE
+
+sections:
+
+  section_1:
+    label: "Last Week — Performance Summary"
+    source_triage: "last_week_performance"
+
+    inclusion_rule: >
+      One entry per account that resolved to any terminal other than
+      terminal_stable_week. Accounts resolving to terminal_stable_week are
+      not enumerated individually — the section opens with a single portfolio
+      summary line and no per-account rows follow.
+
+    portfolio_summary_format:
+      applies_when: "terminal_stable_week is the only result across the full portfolio"
+      format: "{N} accounts reviewed. No performance flags. Portfolio within normal variance."
+
+    per_account_fields:
+      - field: "account_name"
+        source: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS.account_name"
+      - field: "terminal"
+        source: "Triage terminal ID (e.g., terminal_adoption_disruption)"
+      - field: "diagnosis"
+        source: "terminal.diagnosis — full text, do not truncate"
+      - field: "priority"
+        source: "terminal.priority (P1, P2, P3, or null)"
+      - field: "recommended_action"
+        source: "terminal.action — full text, do not truncate"
+      - field: "ae_name"
+        source: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS.ae_name"
+      - field: "csm_name"
+        source: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS.csm_name"
+
+    sort_order: >
+      P1 first, then P2, then P3. Null-priority terminals (terminal_healthy_ramp,
+      terminal_anomalous_spike pending confirmation) follow P3.
+      Within each priority tier, sort by account_name ASC.
+
+  section_2:
+    label: "This Week — Risk & Opportunity Outlook"
+    source_triage: "forward_looking"
+
+    inclusion_rule: >
+      One entry per account that resolved to any terminal other than
+      terminal_portfolio_clean. Accounts resolving to terminal_portfolio_clean
+      are not enumerated individually — the section opens with a single
+      portfolio summary line.
+
+    portfolio_summary_format:
+      applies_when: "terminal_portfolio_clean is the only result across the full portfolio"
+      format: "{N} accounts reviewed. No risk or opportunity flags. Portfolio projection clean."
+
+    per_account_fields:
+      - field: "account_name"
+        source: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS.account_name"
+      - field: "terminal"
+        source: "Triage terminal ID"
+      - field: "diagnosis"
+        source: "terminal.diagnosis — full text, do not truncate"
+      - field: "priority"
+        source: "terminal.priority"
+      - field: "recommended_action"
+        source: "terminal.action — full text, do not truncate"
+      - field: "ae_name"
+        source: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS.ae_name"
+      - field: "csm_name"
+        source: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS.csm_name"
+
+    sort_order: >
+      P1 first, then P2, then P3. Within each priority tier, sort by account_name ASC.
+
+  section_3:
+    label: "Action List — This Week"
+    source_triages:
+      - "last_week_performance"
+      - "forward_looking"
+      - "expansion_qualification (P1 entries only)"
+
+    inclusion_rule: >
+      Consolidated and deduplicated action list drawn from section_1 and section_2.
+      P1 entries from expansion_qualification are also included. Terminals with
+      priority: null are excluded from this section entirely — do not enumerate
+      terminal_stable_week, terminal_portfolio_clean, terminal_healthy_ramp, or
+      terminal_already_in_motion as action items.
+
+    deduplication_rule: >
+      If the same account appears in both section_1 and section_2 with the same
+      recommended_action and the same priority, merge into a single entry and
+      record source_triage as both values. If an account appears with different
+      priorities or different actions across sections, retain both entries with
+      distinct source_triage labels so the recipient understands each is a
+      separate signal.
+
+    per_entry_fields:
+      - field: "account_name"
+        source: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS.account_name"
+      - field: "priority"
+        source: "terminal.priority"
+      - field: "source_triage"
+        values: ["last_week_performance", "forward_looking", "expansion_qualification", "last_week_performance + forward_looking"]
+      - field: "recommended_action"
+        source: "terminal.action — full text, do not truncate"
+      - field: "action_owner"
+        description: >
+          Inferred from recommended_action text at send time.
+          Values: AE, CSM, TS, AE+CSM, TS+CSM.
+          When ambiguous, default to AE+CSM.
+      - field: "ae_name"
+        source: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS.ae_name"
+      - field: "csm_name"
+        source: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS.csm_name"
+
+    sort_order: >
+      P1 → P2 → P3. Within each tier: AE-owned before AE+CSM before
+      CSM-owned before TS+CSM before TS-owned. Within each owner bucket,
+      sort by account_name ASC.
+
+formatting_rules:
+
+  null_priority_exclusion: >
+    Terminals with priority: null are excluded from section_3 and are not
+    enumerated per account in sections 1 or 2. Affected terminals:
+    terminal_stable_week, terminal_portfolio_clean, terminal_healthy_ramp,
+    terminal_already_in_motion. Each collapses to its portfolio_summary_format
+    line in its respective section.
+
+  diagnosis_truncation: "None — output full terminal.diagnosis text"
+
+  action_text_truncation: "None — output full terminal.action text"
+
+  ae_csm_source: >
+    Always pull ae_name and csm_name from SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS
+    via account_id join. Do not use ae_id or csm_id directly in output.
+
+  missing_owner_fields: >
+    If ae_name or csm_name is NULL for an account, output 'Unassigned' and flag
+    the account for CRM data quality review. Do not suppress the action item.
+
+delivery:
+  channel: "Email — automated weekly send"
+  audience: "Sales leaders, AE managers, and CSM managers under Sri's org"
+  send_time: "Monday morning, before first AE/CSM standup of the week"
+  account_source: >
+    SFDC_CONSUMPTION.CORE.TBL_ACCOUNT_ENTITLEMENTS where is_active = TRUE,
+    joined to SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS where is_test_account = FALSE

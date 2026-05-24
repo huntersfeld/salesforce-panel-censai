@@ -1,0 +1,150 @@
+id: "forward_looking"
+name: "Forward-Looking Risk & Opportunity"
+description: >
+  Projects end-of-month CCR at current trajectory for all accounts and identifies
+  both risk (accounts likely to miss month-end targets) and opportunity (accounts
+  approaching overage or expansion thresholds). Runs weekly as part of the digest.
+
+entry_condition:
+  description: "Run for all active accounts at the start of each week"
+
+required_metrics:
+  - "ccr"
+  - "uts"
+  - "abr"
+  - "ers"
+  - "projected_month_end_ccr"
+  - "days_remaining_in_billing_cycle"
+
+nodes:
+
+  q1:
+    question: "Is any account projected to finish the billing month below 75% CCR at current trajectory?"
+    metric: "projected_month_end_ccr"
+    condition: "projected_month_end_ccr < 75"
+    yes: "q2"
+    no: "q5"
+
+  q2:
+    question: "Has UTS been negative for 2 or more consecutive weeks?"
+    metric: "uts_consecutive_negative_weeks"
+    condition: "uts_consecutive_negative_weeks >= 2"
+    yes: "q3"
+    no: "q4"
+
+  q3:
+    question: "Are there 3 or more weeks remaining in the billing cycle?"
+    metric: "days_remaining_in_billing_cycle"
+    condition: "days_remaining_in_billing_cycle >= 21"
+    yes: "terminal_at_risk_with_window"
+    no: "terminal_high_probability_miss"
+
+  q4:
+    question: "Is ABR increasing week-over-week?"
+    metric: "abr_wow_delta"
+    condition: "abr_wow_delta > 0"
+    yes: "terminal_early_ramp"
+    no: "terminal_structural_underutilization"
+
+  q5:
+    question: "Is any account projected to cross 100% CCR within the next 2 weeks at current UTS?"
+    metric: "projected_ccr_in_2_weeks"
+    condition: "projected_ccr_in_2_weeks >= 100"
+    yes: "terminal_pre_overage_window"
+    no: "q6"
+
+  q6:
+    question: "Has any account posted UTS above +15% for 3 or more consecutive weeks?"
+    metric: "uts_actual"
+    condition: "uts_actual > 15 AND uts_consecutive_high_weeks >= 3"
+    yes: "q7"
+    no: "q8"
+
+  q7:
+    question: "Is ERS above 8.0?"
+    metric: "ers_actual"
+    condition: "ers_actual >= 8.0"
+    yes: "terminal_strong_expansion_candidate"
+    no: "q7a"
+
+  q7a:
+    question: "Is ABR below 40%?"
+    metric: "abr_actual"
+    condition: "abr_actual < 40"
+    yes: "terminal_accelerating_narrow"
+    no: "terminal_review_ers"
+
+  q8:
+    question: "Does any account show zero consumption events in the last 7 days?"
+    metric: "days_since_last_consumption_event"
+    condition: "days_since_last_consumption_event >= 7"
+    yes: "terminal_consumption_gap"
+    no: "terminal_portfolio_clean"
+
+terminals:
+
+  terminal_at_risk_with_window:
+    diagnosis: >
+      Account is tracking below 75% month-end CCR with a declining trajectory,
+      but the intervention window is still open (3+ weeks remaining in cycle).
+    action: "CSM to build engagement plan this week. Goal: reverse UTS before the recovery window closes."
+    priority: "P1"
+
+  terminal_high_probability_miss:
+    diagnosis: >
+      High-probability month-end miss. Two weeks or fewer remaining —
+      the intervention window is effectively closed for this month.
+    action: "AE + CSM joint call to set account expectation on month performance. Begin next-month recovery plan immediately."
+    priority: "P1"
+
+  terminal_early_ramp:
+    diagnosis: >
+      CCR is below 75% pace but ABR is increasing week-over-week — consistent
+      with an early-stage ramp. Likely to self-correct as adoption broadens.
+    action: "Monitor. Technical success check-in to confirm no blockers on activation."
+    priority: "P3"
+
+  terminal_structural_underutilization:
+    diagnosis: >
+      CCR low, UTS neutral-to-positive, ABR flat. Customer is not ramping
+      despite neutral trajectory. Possible use case fit or implementation quality issue.
+    action: "Technical success review — map actual use case against contracted use case. Escalate to solutions architect if a gap is identified."
+    priority: "P2"
+
+  terminal_pre_overage_window:
+    diagnosis: >
+      Account is projected to cross 100% CCR within 2 weeks. This is the optimal
+      window for a proactive tier conversation — the commercial ask has a natural
+      customer-benefit framing before overage occurs.
+    action: "AE proactive outreach this week. Do not wait for overage to occur."
+    priority: "P1"
+
+  terminal_strong_expansion_candidate:
+    diagnosis: "Sustained high-velocity UTS (3+ weeks above +15%) with ERS confirming composite health. Strong expansion signal."
+    action: "AE to begin expansion discovery this week. Confirm budget cycle timing and identify target expansion use case."
+    priority: "P2"
+
+  terminal_accelerating_narrow:
+    diagnosis: >
+      High UTS but ABR below 40% — consumption is accelerating but the adoption
+      base is too narrow. Expansion pitch is premature and would land on a
+      fragile foundation.
+    action: "CSM activation plan targeting secondary user groups before AE brings a commercial conversation."
+    priority: "P2"
+
+  terminal_review_ers:
+    diagnosis: "High UTS but ERS below 8.0 despite acceptable ABR. Another ERS component is likely dragging the score — review CCR baseline."
+    action: "Review CCR and UTS inputs to ERS. Recheck ERS in 2 weeks."
+    priority: "P3"
+
+  terminal_consumption_gap:
+    diagnosis: >
+      Account shows zero consumption events in the last 7 days. Cannot distinguish
+      between a technical failure and complete disengagement without further investigation.
+    action: "TS + CSM immediate triage. Check pipeline data freshness first — rule out data issue before customer-facing outreach."
+    priority: "P1"
+
+  terminal_portfolio_clean:
+    diagnosis: "No accounts flagged for risk, dormancy, or overage. Portfolio projection clean."
+    action: "Digest ready for delivery. Proceed to expansion qualification triage."
+    priority: null

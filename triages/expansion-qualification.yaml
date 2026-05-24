@@ -1,0 +1,119 @@
+id: "expansion_qualification"
+name: "Expansion Pipeline Qualification"
+description: >
+  Determines which accounts belong in an active expansion conversation and
+  identifies the specific barrier for accounts that are not yet ready.
+  Produces a tiered expansion queue for AE prioritization. Runs weekly.
+
+entry_condition:
+  description: "Run for all active accounts weekly"
+
+required_metrics:
+  - "ccr"
+  - "uts"
+  - "abr"
+  - "ers"
+
+nodes:
+
+  q1:
+    question: "Is CCR above 100%?"
+    metric: "ccr_actual"
+    condition: "ccr_actual > 100"
+    yes: "terminal_forced_expansion"
+    no: "q2"
+
+  q2:
+    question: "Is ERS at or above 8.0?"
+    metric: "ers_actual"
+    condition: "ers_actual >= 8.0"
+    yes: "q6"
+    no: "q3"
+
+  q3:
+    question: "Is CCR below 75%?"
+    metric: "ccr_actual"
+    condition: "ccr_actual < 75"
+    yes: "terminal_ccr_barrier"
+    no: "q4"
+
+  q4:
+    question: "Is UTS negative or below +2% for 2 or more consecutive weeks?"
+    metric: "uts_actual"
+    condition: "uts_actual < 2 AND uts_consecutive_flat_or_negative_weeks >= 2"
+    yes: "terminal_trajectory_barrier"
+    no: "q5"
+
+  q5:
+    question: "Is ABR below 35%?"
+    metric: "abr_actual"
+    condition: "abr_actual < 35"
+    yes: "terminal_breadth_barrier"
+    no: "terminal_approaching_readiness"
+
+  q6:
+    question: "Has ERS been at or above 8.0 for 2 or more consecutive weeks?"
+    metric: "ers_consecutive_weeks_above_threshold"
+    condition: "ers_consecutive_weeks_above_threshold >= 2"
+    yes: "q7"
+    no: "terminal_first_week_threshold"
+
+  q7:
+    question: "Has an expansion conversation already been initiated this quarter?"
+    metric: null
+    condition: "active_expansion_opportunity_flag = TRUE"
+    data_source: "SALESFORCE_CRM.PUBLIC.TBL_OPPORTUNITIES"
+    yes: "terminal_already_in_motion"
+    no: "terminal_unworked_opportunity"
+
+terminals:
+
+  terminal_forced_expansion:
+    diagnosis: >
+      CCR above 100%. Customer is in active overage — this is a right-sizing
+      conversation, not a discretionary expansion pitch. Delay increases customer
+      frustration and revenue leakage.
+    action: "AE this week. Frame as protecting the customer from ongoing overage charges, not a sales motion. Priority: before next invoice cycle."
+    priority: "P1"
+
+  terminal_ccr_barrier:
+    diagnosis: "CCR below 75%. Customer is underutilizing their current contract. Expanding now would widen the value gap."
+    action: "Adoption and value realization plan required. No commercial conversation until CCR sustains above 80% for 3+ consecutive weeks."
+    priority: "P3"
+
+  terminal_trajectory_barrier:
+    diagnosis: "Flat or declining UTS for 2+ consecutive weeks. No positive consumption signal to support an expansion conversation."
+    action: "Run last_week_performance triage on this account to identify root cause before any commercial motion."
+    priority: "P2"
+
+  terminal_breadth_barrier:
+    diagnosis: >
+      ABR below 35%. Consumption is concentrated in a small user base.
+      Expansion revenue would be fragile and champion-dependent if it landed
+      on this narrow a foundation.
+    action: "CSM structured activation plan. Identify and onboard next user cohort before AE engages commercially."
+    priority: "P2"
+
+  terminal_approaching_readiness:
+    diagnosis: >
+      All three component metrics are acceptable but ERS is borderline (likely 6.0–7.5).
+      Account is approaching expansion readiness at current trajectory.
+    action: "AE awareness flag. No action this week — schedule check-in for W+3."
+    priority: "P3"
+
+  terminal_first_week_threshold:
+    diagnosis: "ERS just crossed 8.0 this week for the first time. Signal has not yet been confirmed as sustained."
+    action: "Monitor one additional week. AE notified to prepare expansion discovery approach."
+    priority: "P3"
+
+  terminal_already_in_motion:
+    diagnosis: "An expansion conversation was already initiated this quarter."
+    action: "AE to report status at next pipeline review. CenSai will flag if no movement is recorded after 3 weeks."
+    priority: null
+
+  terminal_unworked_opportunity:
+    diagnosis: >
+      Account has sustained expansion readiness (ERS >= 8.0 for 2+ weeks)
+      but no active expansion conversation has been initiated this quarter.
+    action: "AE escalation. Require AE explanation if no outreach is initiated within 5 business days."
+    priority: "P1"

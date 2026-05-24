@@ -1,0 +1,161 @@
+metric: "Consumption Coverage Ratio (CCR)"
+
+description: >
+  Measures how much of an account's contracted consumption commitment has been
+  consumed relative to where they should be in the billing cycle. Pace-adjusted
+  so it is meaningful on any day of the month, not just at month-end.
+
+grain: "account-week"
+
+related_metrics:
+  - "uts"
+  - "abr"
+  - "ers"
+
+actual:
+  description: >
+    MTD actual consumption units divided by pace-adjusted contracted units,
+    expressed as a percentage. Values above 100% indicate active overage.
+
+  calculation: >
+    ROUND(
+      SUM(ce.consumption_units) /
+      NULLIF(
+        ent.monthly_contracted_units * (days_elapsed / days_in_month),
+        0
+      ) * 100, 1
+    )
+
+  primary_table: "SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS"
+
+  primary_join_keys:
+    - "TBL_ACCOUNT_ENTITLEMENTS: ce.account_id = ent.account_id AND ent.is_active = TRUE"
+    - "VW_BILLING_CALENDAR: ce.account_id = bc.account_id AND bc.billing_month = DATE_TRUNC('month', ce.event_date)"
+    - "VW_ACCOUNT_DETAILS: ce.account_id = ad.account_id"
+
+  primary_filters:
+    - "WHERE ce.event_date BETWEEN bc.billing_cycle_start AND CURRENT_DATE"
+    - "ad.is_test_account = FALSE"
+
+  supporting_tables:
+    - "SFDC_CONSUMPTION.CORE.TBL_ACCOUNT_ENTITLEMENTS"
+    - "SFDC_CONSUMPTION.CORE.VW_BILLING_CALENDAR"
+    - "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+
+  supporting_join_keys: []
+
+  supporting_filters:
+    - "ent.is_active = TRUE (current active contract only)"
+
+  example: |
+    -- CCR actual for all accounts, current billing month
+    WITH billing_context AS (
+      SELECT
+        bc.account_id,
+        bc.billing_cycle_start,
+        bc.days_in_month,
+        DATEDIFF('day', bc.billing_cycle_start, CURRENT_DATE) + 1 AS days_elapsed,
+        ent.monthly_contracted_units
+      FROM SFDC_CONSUMPTION.CORE.VW_BILLING_CALENDAR bc
+      JOIN SFDC_CONSUMPTION.CORE.TBL_ACCOUNT_ENTITLEMENTS ent
+        ON bc.account_id = ent.account_id
+        AND ent.is_active = TRUE
+      WHERE bc.billing_month = DATE_TRUNC('month', CURRENT_DATE)
+    ),
+    mtd_consumption AS (
+      SELECT
+        ce.account_id,
+        SUM(ce.consumption_units) AS actual_units
+      FROM SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS ce
+      WHERE ce.event_date >= DATE_TRUNC('month', CURRENT_DATE)
+        AND ce.event_date <= CURRENT_DATE
+      GROUP BY ce.account_id
+    )
+    SELECT
+      ad.account_name,
+      ad.segment,
+      ad.ae_name,
+      ad.csm_name,
+      mc.actual_units,
+      ROUND(
+        bc.monthly_contracted_units * (bc.days_elapsed / bc.days_in_month), 0
+      ) AS pace_adjusted_target,
+      ROUND(
+        mc.actual_units /
+        NULLIF(bc.monthly_contracted_units * (bc.days_elapsed / bc.days_in_month), 0)
+        * 100, 1
+      ) AS ccr_actual
+    FROM billing_context bc
+    JOIN mtd_consumption mc ON bc.account_id = mc.account_id
+    JOIN SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS ad ON bc.account_id = ad.account_id
+    WHERE ad.is_test_account = FALSE
+    ORDER BY ccr_actual ASC;
+
+  validation:
+    - "ccr_actual >= 0"
+    - "Flag any account where days_elapsed <= 0 (billing calendar join failure)"
+    - "Flag accounts where actual_units IS NULL (may indicate data pipeline lag)"
+    - "ccr_actual > 150 warrants data quality check before surfacing commercially"
+
+  key_context:
+    - "Pace-adjustment uses calendar days elapsed, not working days — consumption is continuous"
+    - "Use NULLIF on denominator to avoid divide-by-zero on day 1 of billing cycle"
+    - "monthly_contracted_units is the committed tier amount, not a usage capacity ceiling"
+    - "Values above 100% are legitimate and require commercial action, not data correction"
+
+target:
+  type: "data_driven"
+
+  description: >
+    Segment- and tier-level CCR benchmarks set by Central Strategy during planning
+    cycles. Represents the minimum healthy CCR expectation by account profile. Used
+    to contextualize whether an account's CCR is underperforming relative to
+    comparable accounts, not just relative to 100%.
+
+  calculation: "benchmark_ccr_pct from TBL_CCR_BENCHMARKS matched on segment and contract_tier"
+
+  primary_table: "SFDC_CONSUMPTION.PLANNING.TBL_CCR_BENCHMARKS"
+
+  primary_join_keys:
+    - "VW_ACCOUNT_DETAILS: ad.segment = cb.segment AND ad.contract_tier = cb.contract_tier"
+
+  primary_filters:
+    - "WHERE cb.effective_date <= CURRENT_DATE AND cb.expiry_date > CURRENT_DATE"
+
+  supporting_tables:
+    - "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+
+  supporting_join_keys: []
+
+  supporting_filters: []
+
+  example: |
+    SELECT
+      ad.account_name,
+      ad.segment,
+      ad.contract_tier,
+      cb.benchmark_ccr_pct                          AS ccr_target,
+      ccr_actual.ccr_actual,
+      ccr_actual.ccr_actual - cb.benchmark_ccr_pct  AS ccr_vs_target
+    FROM SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS ad
+    JOIN SFDC_CONSUMPTION.PLANNING.TBL_CCR_BENCHMARKS cb
+      ON ad.segment = cb.segment
+      AND ad.contract_tier = cb.contract_tier
+      AND cb.effective_date <= CURRENT_DATE
+      AND cb.expiry_date > CURRENT_DATE
+    ORDER BY ccr_vs_target ASC;
+
+  validation:
+    - "benchmark_ccr_pct BETWEEN 50 AND 100 (targets outside this range warrant review)"
+    - "Every active account should resolve to exactly one benchmark row"
+    - "Flag accounts with no benchmark match (missing segment/tier combination)"
+
+  key_context:
+    - "Benchmarks are set quarterly during planning — verify effective_date before using"
+    - "New segments or tiers may not have a benchmark row yet — handle NULLs explicitly"
+
+thresholds:
+  overage:   "> 100%"
+  healthy:   "80% – 100%"
+  watch:     "60% – 79%"
+  at_risk:   "< 60%"

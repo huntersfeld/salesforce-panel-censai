@@ -1,0 +1,160 @@
+id: "last_week_performance"
+name: "Last Week Performance & Root Cause"
+description: >
+  Evaluates whether any account had a meaningful CCR movement last week and
+  traces the root cause. Runs weekly as part of the digest and on demand
+  when performance questions are asked.
+
+entry_condition:
+  metric: "ccr_wow_delta"
+  description: "Any account with a CCR change of ±5 percentage points or more week-over-week"
+
+required_metrics:
+  - "ccr"
+  - "uts"
+  - "abr"
+
+nodes:
+
+  q1:
+    question: "Did any account post a CCR change of ±5 percentage points or more WoW?"
+    metric: "ccr_wow_delta"
+    condition: "ABS(ccr_wow_delta) >= 5"
+    yes: "q2"
+    no: "terminal_stable_week"
+
+  q2:
+    question: "Which direction did CCR move?"
+    metric: "ccr_wow_delta"
+    condition: "ccr_wow_delta < 0"
+    yes: "q3"
+    no: "q7"
+
+  q3:
+    question: "Was the drop sudden (single week) or gradual (3+ consecutive weeks of decline)?"
+    metric: "ccr_consecutive_decline_weeks"
+    condition: "ccr_consecutive_decline_weeks >= 3"
+    yes: "q5"
+    no: "q4"
+
+  q4:
+    question: "Did ABR also drop this week?"
+    metric: "abr_wow_delta"
+    condition: "abr_wow_delta < 0"
+    yes: "terminal_adoption_disruption"
+    no: "q4b"
+
+  q4b:
+    question: "Was there a known platform event this week?"
+    metric: null
+    condition: "platform_event_log contains an entry for this account or a global event this week"
+    data_source: "SFDC_CONSUMPTION.CORE.TBL_PLATFORM_EVENT_LOG"
+    yes: "terminal_platform_cause"
+    no: "terminal_unidentified_drop"
+
+  q5:
+    question: "Has UTS been negative for 3 or more consecutive weeks?"
+    metric: "uts_consecutive_negative_weeks"
+    condition: "uts_consecutive_negative_weeks >= 3"
+    yes: "q6"
+    no: "terminal_unstable_pattern"
+
+  q6:
+    question: "Is ABR also declining over the same window?"
+    metric: "abr_wow_delta"
+    condition: "abr_wow_delta < 0"
+    yes: "terminal_structural_failure"
+    no: "terminal_consumption_fatigue"
+
+  q7:
+    question: "Is CCR now at or above 95%?"
+    metric: "ccr_actual"
+    condition: "ccr_actual >= 95"
+    yes: "q8"
+    no: "q9"
+
+  q8:
+    question: "Is CCR above 100%?"
+    metric: "ccr_actual"
+    condition: "ccr_actual > 100"
+    yes: "terminal_active_overage"
+    no: "terminal_approaching_overage"
+
+  q9:
+    question: "Is the CCR increase consistent with a positive UTS trend (2+ consecutive weeks)?"
+    metric: "uts_consecutive_positive_weeks"
+    condition: "uts_consecutive_positive_weeks >= 2"
+    yes: "terminal_healthy_ramp"
+    no: "terminal_anomalous_spike"
+
+terminals:
+
+  terminal_stable_week:
+    diagnosis: "Portfolio within normal variance. No accounts require performance triage this week."
+    action: "Proceed to forward-looking triage."
+    priority: null
+
+  terminal_adoption_disruption:
+    diagnosis: >
+      ABR and CCR declined together in the same week — the user base contracted,
+      not just usage intensity. Most likely cause: champion departure, org reorg,
+      or IT policy change.
+    action: "CSM executive outreach within 48 hours. Goal: confirm whether sponsor or champion is still in seat."
+    priority: "P1"
+
+  terminal_platform_cause:
+    diagnosis: "CCR drop is consistent with a known platform event. Likely transient."
+    action: "Confirm platform resolution with TS. Monitor CCR recovery W+1 before escalating to AE."
+    priority: "P2"
+
+  terminal_unidentified_drop:
+    diagnosis: >
+      Sudden CCR drop with no known platform event and stable ABR. Possible causes:
+      seasonal pause, unreported internal change, or data pipeline issue.
+    action: "AE/CSM joint call within 5 business days to surface account context. Verify data freshness in pipeline."
+    priority: "P2"
+
+  terminal_structural_failure:
+    diagnosis: >
+      Structural adoption failure. Usage is narrowing in both intensity and breadth
+      over 3+ consecutive weeks. The user base is actively shrinking.
+      Churn risk is material at current trajectory.
+    action: "Executive escalation. CSM to build 30-day adoption recovery plan. AE to re-qualify renewal intent."
+    priority: "P1"
+
+  terminal_consumption_fatigue:
+    diagnosis: >
+      Installed user base is intact (stable ABR) but engaging less. Possible
+      use case saturation or no activation of adjacent use cases.
+    action: "Technical success review — assess whether current use case is fully built out and identify adjacent use cases not yet activated."
+    priority: "P2"
+
+  terminal_unstable_pattern:
+    diagnosis: "Gradual CCR decline but UTS signal is inconsistent. Metric signals conflict — requires qualitative account context before diagnosis."
+    action: "AE to provide account narrative at next pipeline review."
+    priority: "P3"
+
+  terminal_active_overage:
+    diagnosis: >
+      CCR above 100%. Customer is consuming beyond contracted commitment.
+      Overage fees will appear on the next invoice if not addressed.
+    action: "AE to initiate tier upgrade conversation before invoice cycle. Frame as protecting customer from surprise charge, not upselling."
+    priority: "P1"
+
+  terminal_approaching_overage:
+    diagnosis: "CCR between 95–99%. At current UTS trajectory, overage is likely within 1–2 weeks."
+    action: "AE flag — monitor daily. Proactive outreach if UTS holds above +10% WoW."
+    priority: "P2"
+
+  terminal_healthy_ramp:
+    diagnosis: "CCR increase is consistent with a sustained positive UTS trend. Healthy ramp — no intervention required."
+    action: "Note as positive signal in weekly digest. Continue monitoring."
+    priority: null
+
+  terminal_anomalous_spike:
+    diagnosis: >
+      Single-week CCR spike with no prior positive UTS trend. Possible causes:
+      bulk upload, retroactive data entry, or pipeline catchup event.
+      Do not action commercially until verified.
+    action: "Data validation — check for unusual event volume in source consumption table. Confirm with TS before surfacing to AE."
+    priority: "P2"

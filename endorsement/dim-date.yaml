@@ -1,0 +1,61 @@
+table: "DIM_DATE"
+full_path: "SHARED.DW.DIM_DATE"
+type: "table"
+endorsed_by: "Central Strategy & Consumption"
+
+description: >
+  Shared date dimension table. Use for week/month/quarter grain aggregations,
+  holiday exclusions, and fiscal period lookups. Authoritative source for
+  calendar logic across all CenSai queries.
+
+grain: "one row per calendar date"
+
+primary_key:
+  - "date"
+
+columns:
+  date:
+    type: "DATE"
+    description: "Calendar date — primary join key"
+  day_name:
+    type: "VARCHAR"
+    description: "Full day name (Monday, Tuesday, etc.)"
+  week_start_date:
+    type: "DATE"
+    description: "Monday of the week this date falls in (Monday-Sunday weeks)"
+  month_start_date:
+    type: "DATE"
+    description: "First day of the calendar month"
+  quarter:
+    type: "NUMBER"
+    description: "Calendar quarter (1–4)"
+  fiscal_year:
+    type: "NUMBER"
+    description: "Salesforce fiscal year (Feb–Jan)"
+  fiscal_quarter:
+    type: "NUMBER"
+    description: "Salesforce fiscal quarter"
+  fiscal_period:
+    type: "VARCHAR"
+    description: "Fiscal period label (e.g., FY26-Q2)"
+  is_weekend:
+    type: "BOOLEAN"
+    description: "TRUE for Saturday and Sunday"
+  is_holiday:
+    type: "BOOLEAN"
+    description: "TRUE for company-observed holidays — use to exclude from working day calculations"
+
+join_keys:
+  - with: "SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS"
+    on: "DIM_DATE.date = TBL_CONSUMPTION_EVENTS.event_date"
+
+required_filters: []
+
+caveats:
+  - "week_start_date uses Monday-Sunday weeks — verify this matches the reporting period before use"
+  - "is_holiday reflects company-observed holidays only — does not include regional or customer holidays"
+  - "Salesforce fiscal year runs February–January — use fiscal_year/fiscal_quarter for internal planning metrics"
+
+related_metrics:
+  - "ccr"
+  - "uts"

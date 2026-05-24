@@ -1,0 +1,68 @@
+table: "TBL_OPPORTUNITIES"
+full_path: "SALESFORCE_CRM.PUBLIC.TBL_OPPORTUNITIES"
+type: "table"
+endorsed_by: "Central Strategy & Consumption"
+
+description: >
+  CRM opportunity records sourced from Salesforce Sales Cloud. One row per
+  opportunity. Used by expansion qualification triage to determine whether an
+  active expansion conversation has already been initiated for a given account.
+  Contains expansion, renewal, and new-logo opportunity types — always filter
+  by opportunity_type explicitly to avoid mixing revenue motions.
+
+grain: "one row per opportunity"
+
+primary_key:
+  - "opportunity_id"
+
+columns:
+  opportunity_id:
+    type: "VARCHAR"
+    description: "Unique Salesforce opportunity ID"
+  account_id:
+    type: "VARCHAR"
+    description: "Account the opportunity is attached to — joins to VW_ACCOUNT_DETAILS"
+  opportunity_name:
+    type: "VARCHAR"
+    description: "Opportunity display name as entered in CRM"
+  opportunity_type:
+    type: "VARCHAR"
+    description: "Revenue motion type: EXPANSION, RENEWAL, or NEW_LOGO — do not mix types in the same query"
+  stage:
+    type: "VARCHAR"
+    description: "Current pipeline stage: DISCOVERY, PROPOSAL, NEGOTIATION, CLOSED_WON, or CLOSED_LOST"
+  amount_usd:
+    type: "NUMBER"
+    description: "Committed or estimated opportunity value in USD"
+  created_date:
+    type: "DATE"
+    description: "Date the opportunity record was created in CRM"
+  expected_close_date:
+    type: "DATE"
+    description: "AE-forecast close date — not a contractual commitment"
+  ae_id:
+    type: "VARCHAR"
+    description: "Salesforce user ID of the owning Account Executive — joins to VW_ACCOUNT_DETAILS.ae_id"
+  is_active_expansion:
+    type: "BOOLEAN"
+    description: "Derived flag: TRUE when opportunity_type = 'EXPANSION' AND stage NOT IN ('CLOSED_WON', 'CLOSED_LOST'); use this as the expansion-in-motion signal in triage"
+
+join_keys:
+  - with: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+    on: "TBL_OPPORTUNITIES.account_id = VW_ACCOUNT_DETAILS.account_id"
+  - with: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+    on: "TBL_OPPORTUNITIES.ae_id = VW_ACCOUNT_DETAILS.ae_id"
+
+required_filters:
+  - "is_active_expansion = TRUE when checking for active expansion conversations in triage"
+  - "Always specify opportunity_type explicitly — do not mix EXPANSION and RENEWAL rows in the same query"
+
+caveats:
+  - "is_active_expansion is a derived boolean — it is TRUE only when type = EXPANSION and stage is not closed; renewals must never be counted as expansion regardless of amount"
+  - "expected_close_date reflects AE forecast, not a contracted date — do not use for revenue recognition"
+  - "ae_id reflects current CRM ownership; reassignments update this field and do not preserve history"
+  - "CLOSED_WON and CLOSED_LOST rows are historical — always filter is_active_expansion = TRUE for current-quarter expansion qualification"
+
+related_metrics:
+  - "ers"
+  - "ccr"

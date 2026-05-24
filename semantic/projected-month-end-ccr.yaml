@@ -1,0 +1,134 @@
+metric: "Projected Month-End CCR"
+
+description: >
+  Projects where CCR will land at the end of the current billing month if the
+  account continues consuming at its current daily run rate. Used by the
+  forward-looking triage to flag accounts unlikely to reach the 75% pace
+  threshold by month-end, surfacing them before the intervention window closes.
+
+grain: "account-day"
+
+related_metrics:
+  - "ccr"
+  - "uts"
+  - "projected_ccr_in_2_weeks"
+
+actual:
+  description: >
+    Divide actual MTD consumption units by days elapsed to derive a daily run
+    rate, then multiply by total days in the billing month to project full-month
+    units. Express as a percentage of contracted units (not pace-adjusted —
+    month-end target is the full commitment). Accounts with fewer than 7 days
+    of data are flagged low-confidence but are still computed.
+
+  calculation: >
+    daily_run_rate     = SUM(actual_units) / NULLIF(days_elapsed, 0)
+    projected_units    = daily_run_rate * days_in_month
+    projected_month_end_ccr = projected_units / NULLIF(monthly_contracted_units, 0) * 100
+
+  primary_table: "SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS"
+
+  primary_join_keys:
+    - "TBL_ACCOUNT_ENTITLEMENTS: ce.account_id = ent.account_id AND ent.is_active = TRUE"
+    - "VW_BILLING_CALENDAR: ce.account_id = bc.account_id AND bc.billing_month = DATE_TRUNC('month', CURRENT_DATE)"
+    - "VW_ACCOUNT_DETAILS: ce.account_id = ad.account_id"
+
+  primary_filters:
+    - "WHERE ce.event_date BETWEEN bc.billing_cycle_start AND CURRENT_DATE"
+    - "ad.is_test_account = FALSE"
+    - "bc.days_elapsed > 0 (exclude day-1 accounts — run rate undefined)"
+
+  supporting_tables:
+    - "SFDC_CONSUMPTION.CORE.TBL_ACCOUNT_ENTITLEMENTS"
+    - "SFDC_CONSUMPTION.CORE.VW_BILLING_CALENDAR"
+    - "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+
+  supporting_join_keys: []
+
+  supporting_filters:
+    - "ent.is_active = TRUE (current active contract only)"
+
+  example: |
+    -- Projected month-end CCR for all accounts at current daily run rate
+    WITH billing_context AS (
+      SELECT
+        bc.account_id,
+        bc.billing_cycle_start,
+        bc.days_in_month,
+        DATEDIFF('day', bc.billing_cycle_start, CURRENT_DATE) + 1 AS days_elapsed,
+        ent.monthly_contracted_units
+      FROM SFDC_CONSUMPTION.CORE.VW_BILLING_CALENDAR bc
+      JOIN SFDC_CONSUMPTION.CORE.TBL_ACCOUNT_ENTITLEMENTS ent
+        ON bc.account_id = ent.account_id
+        AND ent.is_active = TRUE
+      WHERE bc.billing_month = DATE_TRUNC('month', CURRENT_DATE)
+    ),
+    mtd_consumption AS (
+      SELECT
+        ce.account_id,
+        SUM(ce.consumption_units) AS actual_units
+      FROM SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS ce
+      WHERE ce.event_date >= DATE_TRUNC('month', CURRENT_DATE)
+        AND ce.event_date <= CURRENT_DATE
+      GROUP BY ce.account_id
+    )
+    SELECT
+      ad.account_name,
+      ad.segment,
+      ad.ae_name,
+      ad.csm_name,
+      bc.days_elapsed,
+      bc.days_in_month,
+      mc.actual_units,
+      CASE WHEN bc.days_elapsed < 7 THEN TRUE ELSE FALSE END AS low_confidence,
+      ROUND(
+        (mc.actual_units / NULLIF(bc.days_elapsed, 0)) * bc.days_in_month
+        / NULLIF(bc.monthly_contracted_units, 0) * 100,
+        1
+      ) AS projected_month_end_ccr
+    FROM billing_context bc
+    JOIN mtd_consumption mc ON bc.account_id = mc.account_id
+    JOIN SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS ad ON bc.account_id = ad.account_id
+    WHERE ad.is_test_account = FALSE
+      AND bc.days_elapsed > 0
+    ORDER BY projected_month_end_ccr ASC;
+
+  validation:
+    - "Exclude accounts where days_elapsed = 0 — run rate is undefined on day 1 of billing cycle"
+    - "Flag accounts where days_elapsed < 7 as low_confidence = TRUE in output; compute but do not action"
+    - "projected_month_end_ccr > 150 warrants data quality check before surfacing commercially"
+    - "NULL actual_units indicates no events in TBL_CONSUMPTION_EVENTS — pipeline lag possible; confirm before treating as zero"
+
+  key_context:
+    - "Projection assumes linear consumption at current run rate — does not account for historical weekly variance or known event spikes"
+    - "Uses full monthly_contracted_units in denominator, not pace-adjusted — this is a month-end view, not a today view"
+    - "Low-confidence flag applies to accounts with days_elapsed < 7; use directionally only until more data accrues"
+    - "Complement with UTS to assess whether trajectory is stable — a declining UTS makes this projection optimistic"
+
+target:
+  type: "threshold"
+
+  description: >
+    The minimum acceptable projected month-end CCR for an account to be
+    considered on track. Accounts projecting below 75% are flagged by the
+    forward-looking triage as intervention candidates. Threshold is set by
+    Central Strategy and aligns with the CCR at-risk boundary.
+
+  calculation: "N/A — threshold-based, no table query"
+
+  primary_table: null
+  primary_join_keys: []
+  primary_filters: []
+  supporting_tables: []
+  supporting_join_keys: []
+  supporting_filters: []
+  example: null
+  validation: []
+
+  key_context:
+    - "75% threshold aligns with the CCR watch/at-risk boundary in the ccr semantic definition"
+    - "Accounts projecting below 75% at month-end should already be below the pace-adjusted 75% threshold today — verify CCR actual before flagging"
+
+thresholds:
+  on_track:  ">= 75% projected"
+  at_risk:   "< 75% projected (forward-looking triage entry condition)"

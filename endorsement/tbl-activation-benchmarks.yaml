@@ -1,0 +1,53 @@
+table: "TBL_ACTIVATION_BENCHMARKS"
+full_path: "SFDC_CONSUMPTION.PLANNING.TBL_ACTIVATION_BENCHMARKS"
+type: "table"
+endorsed_by: "Central Strategy & Consumption"
+
+description: >
+  Segment-level ABR benchmark targets set by Central Strategy. Defines the
+  minimum activation breadth rate required for expansion eligibility. Accounts
+  below their segment benchmark are not qualified for an expansion conversation
+  regardless of CCR or UTS performance.
+
+grain: "one row per segment + effective period"
+
+primary_key:
+  - "benchmark_id"
+
+columns:
+  benchmark_id:
+    type: "VARCHAR"
+    description: "Unique identifier for the benchmark record"
+  segment:
+    type: "VARCHAR"
+    description: "Commercial segment this benchmark applies to — must match VW_ACCOUNT_DETAILS.segment"
+  benchmark_abr_pct:
+    type: "NUMBER"
+    description: "Minimum ABR percentage required for expansion eligibility in this segment"
+  effective_date:
+    type: "DATE"
+    description: "First date this benchmark is in effect"
+  expiry_date:
+    type: "DATE"
+    description: "Last date this benchmark is in effect (exclusive)"
+  set_by:
+    type: "VARCHAR"
+    description: "Name of the Central Strategy team member who set this benchmark"
+  notes:
+    type: "VARCHAR"
+    description: "Optional context on benchmark rationale"
+
+join_keys:
+  - with: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+    on: "TBL_ACTIVATION_BENCHMARKS.segment = VW_ACCOUNT_DETAILS.segment"
+
+required_filters:
+  - "WHERE effective_date <= CURRENT_DATE AND expiry_date > CURRENT_DATE"
+
+caveats:
+  - "Benchmarks are segment-level only — no tier differentiation at this time"
+  - "ABR benchmark is an expansion eligibility floor, not a health target"
+  - "Reviewed semi-annually — verify effective_date before using in downstream reports"
+
+related_metrics:
+  - "abr"

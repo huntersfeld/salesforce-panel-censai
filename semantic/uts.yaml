@@ -1,0 +1,130 @@
+metric: "Usage Trajectory Score (UTS)"
+
+description: >
+  Four-week rolling average of week-over-week consumption growth, expressed as a
+  percentage. Measures momentum direction independently of absolute consumption
+  level. A healthy CCR with a negative UTS is a leading indicator of future CCR
+  deterioration — trajectory often signals trouble 2–3 weeks before coverage does.
+
+grain: "account-week"
+
+related_metrics:
+  - "ccr"
+  - "ers"
+
+actual:
+  description: >
+    For each account, compute WoW consumption growth for each of the last 4 weeks,
+    then average those four values. The rolling average smooths single-week anomalies
+    and produces a more stable directional signal.
+
+  calculation: >
+    AVG(
+      (current_week_units - prior_week_units) / NULLIF(prior_week_units, 0) * 100
+    ) OVER (PARTITION BY account_id ORDER BY consumption_week ROWS BETWEEN 3 PRECEDING AND CURRENT ROW)
+
+  primary_table: "SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS"
+
+  primary_join_keys:
+    - "SHARED.DW.DIM_DATE: dd.date = ce.event_date"
+    - "VW_ACCOUNT_DETAILS: ce.account_id = ad.account_id"
+
+  primary_filters:
+    - "WHERE ce.event_date >= DATEADD('week', -5, DATE_TRUNC('week', CURRENT_DATE))"
+    - "Minimum 2 weeks of data required for a valid UTS — flag accounts with fewer"
+    - "ad.is_test_account = FALSE"
+
+  supporting_tables:
+    - "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+    - "SHARED.DW.DIM_DATE"
+
+  supporting_join_keys: []
+
+  supporting_filters: []
+
+  example: |
+    -- UTS for all accounts as of current week
+    WITH weekly_consumption AS (
+      SELECT
+        ce.account_id,
+        DATE_TRUNC('week', ce.event_date) AS consumption_week,
+        SUM(ce.consumption_units) AS weekly_units
+      FROM SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS ce
+      WHERE ce.event_date >= DATEADD('week', -5, DATE_TRUNC('week', CURRENT_DATE))
+      GROUP BY ce.account_id, DATE_TRUNC('week', ce.event_date)
+    ),
+    wow_growth AS (
+      SELECT
+        account_id,
+        consumption_week,
+        weekly_units,
+        LAG(weekly_units) OVER (
+          PARTITION BY account_id ORDER BY consumption_week
+        ) AS prior_week_units,
+        (weekly_units - LAG(weekly_units) OVER (
+          PARTITION BY account_id ORDER BY consumption_week
+        )) / NULLIF(LAG(weekly_units) OVER (
+          PARTITION BY account_id ORDER BY consumption_week
+        ), 0) * 100 AS wow_growth_pct
+      FROM weekly_consumption
+    )
+    SELECT
+      ad.account_name,
+      ad.segment,
+      ROUND(AVG(wg.wow_growth_pct), 1)  AS uts_actual,
+      COUNT(wg.wow_growth_pct)           AS weeks_of_data
+    FROM wow_growth wg
+    JOIN SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS ad ON wg.account_id = ad.account_id
+    WHERE wg.consumption_week >= DATEADD('week', -4, DATE_TRUNC('week', CURRENT_DATE))
+      AND wg.wow_growth_pct IS NOT NULL
+      AND ad.is_test_account = FALSE
+    GROUP BY ad.account_name, ad.segment
+    HAVING COUNT(wg.wow_growth_pct) >= 2
+    ORDER BY uts_actual ASC;
+
+  validation:
+    - "Flag accounts with fewer than 2 contributing weeks — UTS unreliable below this"
+    - "UTS outside -50% to +100% range warrants data quality check"
+    - "Always report weeks_of_data alongside UTS score — a 2-week UTS is a weaker signal than a 4-week UTS"
+
+  key_context:
+    - "Weeks use Monday-Sunday grain consistent with billing calendar"
+    - "A single spike week can inflate UTS — weeks_of_data tells you how stable the signal is"
+    - "New accounts (<4 weeks old) will have partial UTS — treat as watch, not at-risk by default"
+    - "UTS measures consumption intensity change, not activation breadth — high UTS can coexist with low ABR"
+
+target:
+  type: "threshold"
+
+  description: >
+    UTS does not have a data-driven planned target from a table. Health is defined
+    by directional thresholds set by Central Strategy. Thresholds reflect expected
+    consumption behavior for mature accounts, not contracted commitments.
+
+  calculation: "N/A — threshold-based, no table query"
+
+  primary_table: null
+  primary_join_keys: []
+  primary_filters: []
+  supporting_tables: []
+  supporting_join_keys: []
+  supporting_filters: []
+  example: null
+  validation: []
+
+  key_context:
+    - "Thresholds apply uniformly across segments — no tier-specific adjustments at this time"
+    - "Early-ramp accounts (<8 weeks post-implementation) should use the relaxed threshold set"
+
+thresholds:
+  standard:
+    accelerating:  ">= +10%"
+    healthy:       "+5% to +9%"
+    watch:         "-4% to +4%"
+    declining:     "-5% to -14%"
+    critical:      "<= -15%"
+
+  early_ramp_override:
+    applies_to: "accounts with fewer than 8 weeks since first consumption event"
+    watch:      "-10% to +4%"
+    declining:  "< -10%"

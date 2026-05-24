@@ -1,0 +1,56 @@
+table: "TBL_CCR_BENCHMARKS"
+full_path: "SFDC_CONSUMPTION.PLANNING.TBL_CCR_BENCHMARKS"
+type: "table"
+endorsed_by: "Central Strategy & Consumption"
+
+description: >
+  Segment- and tier-level CCR benchmark targets set by Central Strategy during
+  quarterly planning cycles. Defines the minimum healthy CCR expectation for
+  each account profile. Used to contextualize CCR performance relative to
+  comparable accounts rather than against a universal 100% target.
+
+grain: "one row per segment + contract_tier + effective period"
+
+primary_key:
+  - "benchmark_id"
+
+columns:
+  benchmark_id:
+    type: "VARCHAR"
+    description: "Unique identifier for the benchmark record"
+  segment:
+    type: "VARCHAR"
+    description: "Commercial segment this benchmark applies to — must match VW_ACCOUNT_DETAILS.segment"
+  contract_tier:
+    type: "VARCHAR"
+    description: "Contract tier this benchmark applies to — must match VW_ACCOUNT_DETAILS.contract_tier"
+  benchmark_ccr_pct:
+    type: "NUMBER"
+    description: "Minimum healthy CCR percentage for this segment/tier combination"
+  effective_date:
+    type: "DATE"
+    description: "First date this benchmark is in effect"
+  expiry_date:
+    type: "DATE"
+    description: "Last date this benchmark is in effect (exclusive)"
+  set_by:
+    type: "VARCHAR"
+    description: "Name of the Central Strategy team member who set this benchmark"
+  notes:
+    type: "VARCHAR"
+    description: "Optional context on why this benchmark was set at this level"
+
+join_keys:
+  - with: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+    on: "TBL_CCR_BENCHMARKS.segment = VW_ACCOUNT_DETAILS.segment AND TBL_CCR_BENCHMARKS.contract_tier = VW_ACCOUNT_DETAILS.contract_tier"
+
+required_filters:
+  - "WHERE effective_date <= CURRENT_DATE AND expiry_date > CURRENT_DATE (current benchmarks only)"
+
+caveats:
+  - "Benchmarks are updated quarterly — an account's benchmark may change during the year"
+  - "New segment/tier combinations may not have a benchmark row yet — LEFT JOIN and handle NULLs explicitly"
+  - "benchmark_ccr_pct reflects a healthy floor, not an aspirational target — accounts above benchmark are not necessarily performing optimally"
+
+related_metrics:
+  - "ccr"

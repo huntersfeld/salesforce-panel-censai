@@ -1,0 +1,129 @@
+metric: "Expansion Readiness Score (ERS)"
+
+description: >
+  Composite 1–10 score indicating whether an account is qualified for an active
+  expansion conversation. Derived entirely from CCR, UTS, and ABR — no independent
+  data source. A high ERS means the commercial conditions for expansion are present.
+  Does not account for budget cycle timing, relationship status, or open opportunities —
+  those require AE input and are tracked in Salesforce CRM.
+
+grain: "account-week"
+
+derived_from:
+  - metric: "ccr"
+    weight: 0.4
+    normalization: "LEAST(ccr_actual, 100) / 10"
+    note: "CCR capped at 100 — overage does not increase expansion score, it triggers a separate intervention"
+
+  - metric: "uts"
+    weight: 0.3
+    normalization: "GREATEST(0, LEAST(10, (uts_actual + 10) / 3))"
+    note: "Maps -10% → 0, 0% → 3.3, +5% → 5.0, +20% → 10.0. Clamped to [0, 10]"
+
+  - metric: "abr"
+    weight: 0.3
+    normalization: "abr_actual / 10"
+    note: "Linear — 60% ABR = 6.0 contribution before weighting"
+
+related_metrics:
+  - "ccr"
+  - "uts"
+  - "abr"
+
+actual:
+  description: >
+    Weighted composite of normalized CCR, UTS, and ABR. Each component is
+    normalized to a 0–10 scale before weighting is applied. CCR is capped at
+    100% for normalization purposes.
+
+  calculation: >
+    ROUND(
+      (LEAST(ccr_actual, 100) / 10 * 0.4) +
+      (GREATEST(0, LEAST(10, (uts_actual + 10) / 3)) * 0.3) +
+      (abr_actual / 10 * 0.3),
+      1
+    )
+
+  primary_table: null
+
+  primary_join_keys: []
+
+  primary_filters: []
+
+  supporting_tables:
+    - "Requires CCR actual output (see semantic/ccr.yaml)"
+    - "Requires UTS actual output (see semantic/uts.yaml)"
+    - "Requires ABR actual output (see semantic/abr.yaml)"
+
+  supporting_join_keys: []
+
+  supporting_filters: []
+
+  example: |
+    -- ERS derived from component metric CTEs
+    -- Assumes ccr_base, uts_base, abr_base CTEs are already defined above in the query
+    SELECT
+      ad.account_name,
+      ad.segment,
+      ad.ae_name,
+      ccr.ccr_actual,
+      uts.uts_actual,
+      abr.abr_actual,
+      ROUND(
+        (LEAST(ccr.ccr_actual, 100) / 10 * 0.4) +
+        (GREATEST(0, LEAST(10, (uts.uts_actual + 10) / 3)) * 0.3) +
+        (abr.abr_actual / 10 * 0.3),
+        1
+      ) AS ers_actual,
+      CASE
+        WHEN ccr.ccr_actual > 100  THEN 'OVERAGE — run overage intervention, not expansion'
+        WHEN ers_actual >= 8.0     THEN 'Expansion ready'
+        WHEN ers_actual >= 6.0     THEN 'Approaching — monitor'
+        ELSE                            'Not ready'
+      END AS expansion_status
+    FROM SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS ad
+    JOIN ccr_base ccr ON ad.account_id = ccr.account_id
+    JOIN uts_base uts ON ad.account_id = uts.account_id
+    JOIN abr_base abr ON ad.account_id = abr.account_id
+    WHERE ad.is_test_account = FALSE
+    ORDER BY ers_actual DESC;
+
+  validation:
+    - "ers_actual BETWEEN 0 AND 10"
+    - "ERS requires all three component metrics — NULL in any component invalidates the score"
+    - "Flag accounts where ccr_actual > 100 — ERS is still computed but overage flag takes priority"
+    - "Accounts where uts weeks_of_data < 2 should have ERS marked as provisional"
+
+  key_context:
+    - "ERS is an input to the expansion triage decision, not the final commercial decision"
+    - "CCR cap at 100% is intentional — overage is a risk signal, not an expansion strength signal"
+    - "Weights (0.4 / 0.3 / 0.3) are the current endorsed values — changes require metric definition update and stakeholder alignment"
+    - "ERS must be sustained above 8.0 for 2+ weeks before expansion conversation is initiated — single-week spikes do not qualify"
+
+target:
+  type: "threshold"
+
+  description: >
+    ERS does not have a planned target from a data table. Expansion eligibility
+    is defined by a fixed threshold reviewed quarterly by Central Strategy.
+
+  calculation: "N/A — threshold-based"
+
+  primary_table: null
+  primary_join_keys: []
+  primary_filters: []
+  supporting_tables: []
+  supporting_join_keys: []
+  supporting_filters: []
+  example: null
+  validation: []
+
+  key_context:
+    - "Threshold of 8.0 for expansion eligibility is the current endorsed value"
+    - "Threshold changes require a metric definition update and stakeholder alignment before taking effect"
+
+thresholds:
+  expansion_ready:     ">= 8.0 (sustained 2+ consecutive weeks)"
+  approaching:         "6.0 – 7.9"
+  not_ready:           "< 6.0"
+  overage_override:    "If CCR > 100%, run overage triage regardless of ERS value"

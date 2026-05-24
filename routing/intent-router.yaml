@@ -1,0 +1,96 @@
+name: "CenSai Intent Router"
+
+description: >
+  Classifies incoming natural language questions and routes them to the
+  appropriate triage workflow(s), account deep dive, or free-form query mode.
+  Matching is semantic, not keyword-exact — route on intent, not phrasing.
+
+modes:
+
+  - id: "triage"
+    description: "Pre-defined decision tree for recurring weekly questions"
+    triages:
+
+      - id: "last_week_performance"
+        file: "triages/last-week-performance.yaml"
+        intent_triggers:
+          - "how did we do"
+          - "how did we perform"
+          - "what happened last week"
+          - "last week performance"
+          - "what went wrong"
+          - "any misses"
+          - "root cause"
+          - "why did [account] drop"
+          - "what caused the decline"
+          - "performance review"
+          - "weekly recap"
+          - "how were we tracking last week"
+
+      - id: "forward_looking"
+        file: "triages/forward-looking.yaml"
+        intent_triggers:
+          - "how are we looking"
+          - "how are we tracking"
+          - "what should I watch this week"
+          - "any accounts at risk"
+          - "what are the concerns"
+          - "who is behind"
+          - "on track"
+          - "any fires"
+          - "what do I need to know this week"
+          - "coming week"
+          - "next week outlook"
+          - "anything to flag"
+
+      - id: "expansion_qualification"
+        file: "triages/expansion-qualification.yaml"
+        intent_triggers:
+          - "who is ready to expand"
+          - "expansion pipeline"
+          - "which accounts should we pitch"
+          - "expansion candidates"
+          - "who should the AE be talking to"
+          - "upsell opportunities"
+          - "ready for a commercial conversation"
+          - "expansion readiness"
+          - "who is qualified"
+          - "who should we prioritize for expansion"
+
+  - id: "account_deep_dive"
+    description: >
+      Triggered when a specific account name or ID is included in the question.
+      Runs all three triages scoped to the named account and synthesizes output
+      into a single-account view.
+    pattern: "question contains a recognizable account name or account_id"
+    behavior: >
+      Run last_week_performance, forward_looking, and expansion_qualification
+      filtered to the named account. Return a synthesized view with diagnosis
+      and recommended actions across all three dimensions.
+
+  - id: "free_form"
+    description: >
+      Fallback for questions that do not match any triage trigger. The LLM
+      constructs a Snowflake query using endorsed table definitions and
+      semantic metric calculations to answer directly.
+    fallback: true
+    behavior: >
+      Identify which metrics from the semantic layer are relevant to the
+      question. Use endorsed table schemas to construct a valid query.
+      Apply all required_filters and caveats from the relevant endorsement
+      files before returning output. If the question requires a table not
+      in the endorsement layer, say so rather than querying it.
+    guardrails:
+      - "Only query endorsed tables listed in the endorsement layer"
+      - "Apply all required_filters defined in the relevant endorsement file"
+      - "Use metric calculations exactly as defined in the semantic layer — do not improvise"
+      - "If a required table is not endorsed, surface the gap rather than querying"
+      - "Log the question text to metadata table for roadmap review"
+
+metadata_logging:
+  enabled: true
+  purpose: >
+    All questions routed through free_form mode are logged. Recurring
+    free-form questions are reviewed weekly to identify triage candidates.
+    Stakeholder usage patterns are a direct input to the CenSai roadmap.
+  table: "SFDC_CONSUMPTION.CENSAI.TBL_QUESTION_LOG"

@@ -1,0 +1,56 @@
+table: "VW_BILLING_CALENDAR"
+full_path: "SFDC_CONSUMPTION.CORE.VW_BILLING_CALENDAR"
+type: "view"
+endorsed_by: "Central Strategy & Consumption"
+
+description: >
+  Derived view that expands each account's billing cycle into a per-month record
+  with pre-computed pace metrics (days elapsed, days remaining, days in month).
+  Eliminates the need to recalculate billing cycle math inline in every CCR query.
+
+grain: "one row per account per billing month"
+
+primary_key:
+  - "account_id"
+  - "billing_month"
+
+columns:
+  account_id:
+    type: "VARCHAR"
+    description: "Account identifier — joins to VW_ACCOUNT_DETAILS and TBL_ACCOUNT_ENTITLEMENTS"
+  billing_month:
+    type: "DATE"
+    description: "First day of the billing month this row represents"
+  billing_cycle_start:
+    type: "DATE"
+    description: "Actual start date of the billing cycle for this account this month"
+  billing_cycle_end:
+    type: "DATE"
+    description: "Last day of the billing cycle for this account this month"
+  days_in_month:
+    type: "NUMBER"
+    description: "Total calendar days in the billing cycle"
+  days_elapsed:
+    type: "NUMBER"
+    description: "Calendar days elapsed from billing_cycle_start through today — pre-computed daily"
+  days_remaining:
+    type: "NUMBER"
+    description: "Calendar days remaining until billing_cycle_end — pre-computed daily"
+
+join_keys:
+  - with: "SFDC_CONSUMPTION.CORE.TBL_ACCOUNT_ENTITLEMENTS"
+    on: "VW_BILLING_CALENDAR.account_id = TBL_ACCOUNT_ENTITLEMENTS.account_id AND TBL_ACCOUNT_ENTITLEMENTS.is_active = TRUE"
+  - with: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+    on: "VW_BILLING_CALENDAR.account_id = VW_ACCOUNT_DETAILS.account_id"
+
+required_filters:
+  - "WHERE billing_month = DATE_TRUNC('month', CURRENT_DATE) for current month"
+  - "Use billing_cycle_start (not DATE_TRUNC month) as the start of consumption filter window"
+
+caveats:
+  - "days_elapsed and days_remaining refresh daily via the view definition — no manual refresh needed"
+  - "Accounts with non-standard billing cycles (not 1st of month) will have billing_cycle_start != billing_month"
+  - "View only includes accounts with an active entitlement row — accounts without entitlements will be absent"
+
+related_metrics:
+  - "ccr"

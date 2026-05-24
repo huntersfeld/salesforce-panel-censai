@@ -1,0 +1,152 @@
+metric: "Activation Breadth Rate (ABR)"
+
+description: >
+  Percentage of enabled users on an account who generated at least one consumption
+  event in the trailing 30 days. Measures adoption distribution — distinguishing
+  broad organizational adoption from champion-dependent usage. A low ABR is a
+  leading indicator of renewal fragility regardless of CCR level.
+
+grain: "account-week"
+
+related_metrics:
+  - "ccr"
+  - "ers"
+
+actual:
+  description: >
+    Count of distinct users with at least one consumption event in the trailing
+    30 days, divided by count of distinct enabled users on the account.
+
+  calculation: >
+    ROUND(
+      COUNT(DISTINCT active_user_id) / NULLIF(COUNT(DISTINCT enabled_user_id), 0) * 100,
+      1
+    )
+
+  primary_table: "SFDC_CONSUMPTION.CORE.TBL_USER_ACTIVATION"
+
+  primary_join_keys:
+    - "TBL_ACCOUNT_ENTITLEMENTS: ua.account_id = ent.account_id AND ent.is_active = TRUE"
+    - "VW_ACCOUNT_DETAILS: ua.account_id = ad.account_id"
+
+  primary_filters:
+    - "Active window: ua.last_activity_date >= DATEADD('day', -30, CURRENT_DATE)"
+    - "Enabled users only: ua.provisioning_status = 'ACTIVE'"
+    - "Exclude non-human accounts: ua.user_type = 'HUMAN'"
+    - "ad.is_test_account = FALSE"
+
+  supporting_tables:
+    - "SFDC_CONSUMPTION.CORE.TBL_ACCOUNT_ENTITLEMENTS"
+    - "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+
+  supporting_join_keys: []
+
+  supporting_filters:
+    - "ent.is_active = TRUE"
+
+  example: |
+    -- ABR for all accounts, trailing 30 days
+    WITH enabled_users AS (
+      SELECT
+        account_id,
+        COUNT(DISTINCT user_id) AS total_enabled_users
+      FROM SFDC_CONSUMPTION.CORE.TBL_USER_ACTIVATION
+      WHERE provisioning_status = 'ACTIVE'
+        AND user_type = 'HUMAN'
+      GROUP BY account_id
+    ),
+    active_users AS (
+      SELECT
+        account_id,
+        COUNT(DISTINCT user_id) AS active_users_30d
+      FROM SFDC_CONSUMPTION.CORE.TBL_USER_ACTIVATION
+      WHERE last_activity_date >= DATEADD('day', -30, CURRENT_DATE)
+        AND provisioning_status = 'ACTIVE'
+        AND user_type = 'HUMAN'
+      GROUP BY account_id
+    )
+    SELECT
+      ad.account_name,
+      ad.segment,
+      ad.csm_name,
+      eu.total_enabled_users,
+      COALESCE(au.active_users_30d, 0)  AS active_users_30d,
+      ROUND(
+        COALESCE(au.active_users_30d, 0) / NULLIF(eu.total_enabled_users, 0) * 100,
+        1
+      ) AS abr_actual
+    FROM enabled_users eu
+    LEFT JOIN active_users au ON eu.account_id = au.account_id
+    JOIN SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS ad ON eu.account_id = ad.account_id
+    WHERE ad.is_test_account = FALSE
+    ORDER BY abr_actual ASC;
+
+  validation:
+    - "abr_actual BETWEEN 0 AND 100"
+    - "Flag accounts where total_enabled_users = 0 (provisioning data gap)"
+    - "Flag accounts where active_users_30d > total_enabled_users (join or provisioning anomaly)"
+    - "COALESCE active_users to 0 — NULL means no activity, not missing data"
+
+  key_context:
+    - "Trailing 30 days rolls daily — ABR can move week-over-week without any new consumption events this week"
+    - "Exclude user_type != 'HUMAN' to avoid inflating ABR with API or integration service accounts"
+    - "A single power user driving all consumption will show low ABR alongside normal CCR"
+    - "ABR decline often precedes CCR decline by 2–3 weeks — treat as early warning signal"
+
+target:
+  type: "data_driven"
+
+  description: >
+    Segment-level activation rate targets set by Central Strategy. Defines the
+    minimum ABR threshold considered healthy for expansion eligibility. Accounts
+    below target ABR are not qualified for expansion conversation regardless of
+    CCR or UTS performance.
+
+  calculation: "benchmark_abr_pct from TBL_ACTIVATION_BENCHMARKS matched on segment"
+
+  primary_table: "SFDC_CONSUMPTION.PLANNING.TBL_ACTIVATION_BENCHMARKS"
+
+  primary_join_keys:
+    - "VW_ACCOUNT_DETAILS: ad.segment = ab.segment"
+
+  primary_filters:
+    - "WHERE ab.effective_date <= CURRENT_DATE AND ab.expiry_date > CURRENT_DATE"
+
+  supporting_tables:
+    - "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+
+  supporting_join_keys: []
+
+  supporting_filters: []
+
+  example: |
+    SELECT
+      ad.account_name,
+      ad.segment,
+      ab.benchmark_abr_pct                           AS abr_target,
+      abr_actual.abr_actual,
+      abr_actual.abr_actual - ab.benchmark_abr_pct   AS abr_vs_target,
+      CASE
+        WHEN abr_actual.abr_actual >= ab.benchmark_abr_pct THEN 'Eligible'
+        ELSE 'Below threshold'
+      END AS expansion_eligibility
+    FROM SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS ad
+    JOIN SFDC_CONSUMPTION.PLANNING.TBL_ACTIVATION_BENCHMARKS ab
+      ON ad.segment = ab.segment
+      AND ab.effective_date <= CURRENT_DATE
+      AND ab.expiry_date > CURRENT_DATE
+    ORDER BY abr_vs_target ASC;
+
+  validation:
+    - "benchmark_abr_pct BETWEEN 30 AND 80 (outside this range warrants review)"
+    - "Every active account should resolve to exactly one benchmark row"
+    - "Flag accounts with no benchmark match (missing segment combination)"
+
+  key_context:
+    - "ABR target is a floor for expansion eligibility, not a performance goal"
+    - "Benchmarks are reviewed semi-annually — always verify effective_date"
+
+thresholds:
+  healthy:   ">= 60%"
+  watch:     "35% – 59%"
+  at_risk:   "< 35%"

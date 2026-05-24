@@ -1,0 +1,62 @@
+table: "TBL_ACCOUNT_ENTITLEMENTS"
+full_path: "SFDC_CONSUMPTION.CORE.TBL_ACCOUNT_ENTITLEMENTS"
+type: "table"
+endorsed_by: "Central Strategy & Consumption"
+
+description: >
+  One row per active contract entitlement per account. Defines contracted
+  consumption commitment, tier, and billing cycle anchor. Source of truth
+  for what an account is obligated to consume each month.
+
+grain: "one row per account per active contract"
+
+primary_key:
+  - "entitlement_id"
+
+columns:
+  entitlement_id:
+    type: "VARCHAR"
+    description: "Unique identifier for the contract entitlement record"
+  account_id:
+    type: "VARCHAR"
+    description: "Account this entitlement belongs to"
+  product_sku:
+    type: "VARCHAR"
+    description: "Product covered by this entitlement"
+  monthly_contracted_units:
+    type: "NUMBER"
+    description: "Committed consumption units per month — denominator for CCR calculation"
+  contract_tier:
+    type: "VARCHAR"
+    description: "Commercial tier (e.g., STARTER, GROWTH, ENTERPRISE) — joins to benchmark tables"
+  contract_start_date:
+    type: "DATE"
+    description: "First day of the active contract period"
+  contract_end_date:
+    type: "DATE"
+    description: "Last day of the active contract period — use for renewal date logic"
+  billing_cycle_start_day:
+    type: "NUMBER"
+    description: "Day of month the billing cycle begins (e.g., 1 = first of month)"
+  is_active:
+    type: "BOOLEAN"
+    description: "TRUE if this is the current active contract. Always filter to is_active = TRUE"
+
+join_keys:
+  - with: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+    on: "TBL_ACCOUNT_ENTITLEMENTS.account_id = VW_ACCOUNT_DETAILS.account_id"
+  - with: "SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS"
+    on: "TBL_ACCOUNT_ENTITLEMENTS.account_id = TBL_CONSUMPTION_EVENTS.account_id"
+  - with: "SFDC_CONSUMPTION.PLANNING.TBL_CCR_BENCHMARKS"
+    on: "VW_ACCOUNT_DETAILS.contract_tier = TBL_CCR_BENCHMARKS.contract_tier AND VW_ACCOUNT_DETAILS.segment = TBL_CCR_BENCHMARKS.segment"
+
+required_filters:
+  - "Always filter: is_active = TRUE unless specifically querying contract history"
+
+caveats:
+  - "An account may have multiple rows if they have had contract amendments — is_active = TRUE returns only the current contract"
+  - "monthly_contracted_units is the committed amount, not a consumption cap — overages are possible"
+  - "product_sku must match the product_sku in TBL_CONSUMPTION_EVENTS if filtering by product"
+
+related_metrics:
+  - "ccr"

@@ -1,0 +1,60 @@
+table: "TBL_USER_ACTIVATION"
+full_path: "SFDC_CONSUMPTION.CORE.TBL_USER_ACTIVATION"
+type: "table"
+endorsed_by: "Central Strategy & Consumption"
+
+description: >
+  One row per provisioned user per account. Tracks activation status and
+  last engagement date. Primary source for Activation Breadth Rate (ABR).
+  Does not contain event-level detail — use TBL_CONSUMPTION_EVENTS for
+  event-level user activity.
+
+grain: "one row per user per account"
+
+primary_key:
+  - "user_id"
+
+columns:
+  user_id:
+    type: "VARCHAR"
+    description: "Unique identifier for the user"
+  account_id:
+    type: "VARCHAR"
+    description: "Account this user belongs to"
+  user_email:
+    type: "VARCHAR"
+    description: "User email address — do not include in aggregated outputs surfaced externally"
+  provisioning_status:
+    type: "VARCHAR"
+    description: "Current provisioning state: ACTIVE, DEPROVISIONED, PENDING"
+  provisioned_date:
+    type: "DATE"
+    description: "Date the user was provisioned — useful for cohort-based activation analysis"
+  last_activity_date:
+    type: "DATE"
+    description: "Most recent date the user generated a consumption event"
+  user_type:
+    type: "VARCHAR"
+    description: "HUMAN, API, or SYSTEM — always filter to HUMAN for ABR calculations"
+  user_role:
+    type: "VARCHAR"
+    description: "Role assigned to the user within the product (e.g., ADMIN, STANDARD, READ_ONLY)"
+
+join_keys:
+  - with: "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+    on: "TBL_USER_ACTIVATION.account_id = VW_ACCOUNT_DETAILS.account_id"
+  - with: "SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS"
+    on: "TBL_USER_ACTIVATION.user_id = TBL_CONSUMPTION_EVENTS.user_id"
+
+required_filters:
+  - "provisioning_status = 'ACTIVE' for all ABR calculations (denominator)"
+  - "user_type = 'HUMAN' to exclude API and system service accounts"
+
+caveats:
+  - "last_activity_date updates daily via pipeline — may lag by up to 24 hours"
+  - "DEPROVISIONED users retain their row but should be excluded from ABR denominator"
+  - "A user can be ACTIVE in provisioning_status but have a last_activity_date > 30 days ago — this counts as inactive for ABR"
+  - "user_email is PII — exclude from any output shared externally"
+
+related_metrics:
+  - "abr"

@@ -1,0 +1,96 @@
+metric: "Days Since Last Consumption Event"
+
+description: >
+  Point-in-time dormancy metric. Returns the number of calendar days elapsed
+  since the account's most recent consumption event in TBL_CONSUMPTION_EVENTS.
+  Used by the forward-looking triage to flag accounts with zero activity in the
+  last 7 days, which require immediate TS + CSM triage to distinguish a data
+  pipeline issue from genuine disengagement.
+
+grain: "account-day"
+
+related_metrics:
+  - "ccr"
+  - "uts"
+
+actual:
+  description: >
+    DATEDIFF between the most recent event_date recorded for the account and
+    CURRENT_DATE. Returns a non-negative integer. Accounts with no rows in
+    TBL_CONSUMPTION_EVENTS are flagged separately as never-consumed — treat
+    differently from dormant accounts with prior history.
+
+  calculation: >
+    DATEDIFF('day', MAX(ce.event_date), CURRENT_DATE)
+
+  primary_table: "SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS"
+
+  primary_join_keys:
+    - "VW_ACCOUNT_DETAILS: ce.account_id = ad.account_id"
+
+  primary_filters:
+    - "ad.is_test_account = FALSE"
+
+  supporting_tables:
+    - "SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS"
+
+  supporting_join_keys: []
+
+  supporting_filters: []
+
+  example: |
+    -- Days since last consumption event, all accounts with >= 7 days dormancy
+    SELECT
+      ad.account_name,
+      ad.segment,
+      ad.ae_name,
+      ad.csm_name,
+      MAX(ce.event_date)                                    AS last_event_date,
+      DATEDIFF('day', MAX(ce.event_date), CURRENT_DATE)    AS days_since_last_event
+    FROM SFDC_CONSUMPTION.CORE.TBL_CONSUMPTION_EVENTS ce
+    JOIN SALESFORCE_CRM.PUBLIC.VW_ACCOUNT_DETAILS ad ON ce.account_id = ad.account_id
+    WHERE ad.is_test_account = FALSE
+    GROUP BY ad.account_name, ad.segment, ad.ae_name, ad.csm_name
+    HAVING DATEDIFF('day', MAX(ce.event_date), CURRENT_DATE) >= 7
+    ORDER BY days_since_last_event DESC;
+
+  validation:
+    - "Accounts absent from TBL_CONSUMPTION_EVENTS entirely are never-consumed — flag separately, do not report as days_since_last_event"
+    - "Verify pipeline data freshness before acting: a days_since_last_event >= 7 may reflect a data pipeline lag rather than customer disengagement"
+    - "days_since_last_event = 0 means the account consumed today; confirm event_date grain matches billing calendar"
+    - "Cross-reference with CCR: an account with high CCR but 7+ dormant days is almost certainly a pipeline data issue"
+
+  key_context:
+    - "Dormancy threshold of 7 days aligns with the condition in forward-looking triage q8 — keep these in sync"
+    - "Always rule out data pipeline failure before initiating customer-facing outreach on dormancy"
+    - "A sudden spike in days_since_last_event for many accounts simultaneously indicates an upstream ingestion issue, not a customer behavior change"
+    - "Accounts with days_since_last_event >= 30 should be aligned with AE on renewal risk, not just CSM on activation"
+
+target:
+  type: "threshold"
+
+  description: >
+    Dormancy thresholds define escalation tiers. The 7-day threshold is the
+    triage entry condition in forward-looking q8. Longer windows indicate
+    increasing risk and broader stakeholder involvement.
+
+  calculation: "N/A — threshold-based, no table query"
+
+  primary_table: null
+  primary_join_keys: []
+  primary_filters: []
+  supporting_tables: []
+  supporting_join_keys: []
+  supporting_filters: []
+  example: null
+  validation: []
+
+  key_context:
+    - "Thresholds apply uniformly across segments — there are no tier-specific dormancy targets at this time"
+    - "Newly onboarded accounts (<14 days post-implementation) should be excluded from dormancy triage — expected behavior during setup"
+
+thresholds:
+  active:   "0 – 6 days (no flag)"
+  dormant:  ">= 7 days (forward-looking triage flag; TS + CSM triage required)"
+  stale:    ">= 14 days (escalate; data pipeline check should have been completed by now)"
+  inactive: ">= 30 days (renewal risk; align AE, CSM, and executive sponsor)"
